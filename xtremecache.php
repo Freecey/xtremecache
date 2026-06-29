@@ -45,7 +45,7 @@ class Xtremecache extends Module
 
             $this->displayName = $this->l("Xtreme cache");
             $this->description = $this->l("Full page cache for Prestashop.");
-            $this->ps_versions_compliancy = array("min" => "1.6", "max" => "1.6.99.99");
+            $this->ps_versions_compliancy = array("min" => "1.6", "max" => "1.7.99.99");
             
             $this->cache = Cache::getInstance();
     }
@@ -67,7 +67,7 @@ class Xtremecache extends Module
                 $this->registerHook("actionProductDelete") &&
                 $this->registerHook("actionProductSave") &&
                 $this->registerHook("displayHeader") &&
-                $this->registerHook("actionResponse");
+                $this->registerHook("actionRequestComplete");
     }
     
     /**
@@ -85,7 +85,7 @@ class Xtremecache extends Module
                 $this->unregisterHook("actionProductDelete") &&
                 $this->unregisterHook("actionProductSave") &&
                 $this->unregisterHook("displayHeader") &&
-                $this->unregisterHook("actionResponse");
+                $this->unregisterHook("actionRequestComplete");
     }
 
     /**
@@ -110,10 +110,10 @@ class Xtremecache extends Module
      * 
      * @param array $params
      */
-    public function hookActionResponse(array $params)
+    public function hookActionRequestComplete(array $params)
     {
-        if ($this->isActive()) {
-            $this->store($params["html"]);
+        if ($this->isActive() && isset($params["output"])) {
+            $this->store($params["output"]);
         }
     }
     
@@ -216,13 +216,13 @@ class Xtremecache extends Module
      */
     private function createHooks()
     {
-        $id = Hook::getIdByName("actionResponse");
-        
+        $id = Hook::getIdByName("actionRequestComplete");
+
         if (!$id) {
             $hook = new Hook();
             $hook->hydrate([
-                "name"          => "actionResponse",
-                "title"         => "actionResponse",
+                "name"          => "actionRequestComplete",
+                "title"         => "actionRequestComplete",
                 "description"   => "Run before sending response to the browser",
                 "position"      => 1,
                 "live_edit"     => 0
