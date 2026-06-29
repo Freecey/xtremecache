@@ -1,6 +1,7 @@
-# Audit — module xtremecache (full page cache PrestaShop)
+# Audit — module `esipagecache` (ex-xtremecache, full page cache PrestaShop)
 
 **Auditeur :** ESI (Cedric AUDRIT) — 2026-06-29
+**Renommage :** le module est renommé `xtremecache` → **`esipagecache`** (classe `Esipagecache`, auteur ESI, v2.0.0) à partir de la review v2.0 — voir section dédiée.
 **Source :** fork de `SimoneS93/xtremecache` (branche master, dernier commit upstream 2020-08-02 « abandoned »)
 **Cible :** PrestaShop **1.7.6.1**, **PHP 7.2**, serveur **Apache**, cache PS = **Memcached** (64 Mo partagé)
 **Objectif métier :** réduire les *temp tables sur disque* MariaDB causées par la requête de listing catégorie (cf. site all4auto/Multicolor).
@@ -136,3 +137,47 @@ dépréciations PHP 8.1 (null vers fonctions string). Pas de propriété dynamiq
 Le module est cohérent, sûr par défaut (anonyme/200/atomique), et l'invalidation ciblée évite le *cold cache* sur les
 syncs produit fréquents. **Reste obligatoire** : test fonctionnel + mesure sur un **PrestaShop 1.7.6 isolé** (cf. plan ci-dessus)
 avant tout usage sur la prod (`preprod.multicolor-sa.com` = prod réelle).
+
+---
+
+## Review v2.0 (2026-06-29) — review complète + renommage + fit-for-purpose
+
+Relecture intégrale de tous les fichiers (module + 2 overrides + meta). Trois constats neufs, tous traités.
+
+| # | Constat | Gravité | Statut |
+|---|---|---|---|
+| R1 | Le bouton **« Vider le cache » du BO** (Perf.) émet `actionEmptySmartyCache` via l'override `AdminPerformanceController`, mais le module **n'écoutait pas** ce hook → un admin qui vide le cache laissait des **pages FPC périmées** en ligne | 🟠 cohérence | ✅ **corrigé** (hook enregistré + `hookActionEmptySmartyCache()` → `flush()`) |
+| R2 | `README.md` = `[Abandoned]` (vide, hérité de l'upstream) | 🟡 doc | ✅ **réécrit** (README complet : why/how/install/config/limites/compat) |
+| R3 | Aucune **allow-list de pages** au stockage → un endpoint **GET dynamique** de module passant par `smartyOutputContent` pouvait être caché | 🟠 sûreté | ✅ **corrigé** (`isCacheablePage()` : seules les pages catalogue en lecture seule sont cachées ; `search` retiré du tagging pour éviter le *cache bloat* par requête) |
+| + | **Renommage** `xtremecache` → `esipagecache` (identité ESI, v2.0.0), doublon de version supprimé, ajout des `index.php` de garde, constante `CUSTOMER_HEADER`→`DEBUG_HEADER`, en-tête `X-Xtremecache`→`X-Esipagecache`, dossier cache `esipagecache/` | 🟢 | ✅ fait |
+
+**Note de sûreté (R3)** : même sans l'allow-list, le chemin *serve* (dispatch) ne peut renvoyer qu'une clé **déjà stockée** ;
+borner le *store* aux pages catalogue borne donc aussi le *serve*. Les formulaires (contact/auth/panier/commande) restent
+exclus par les gardes anonyme/panier-vide ; l'allow-list est une **défense en profondeur** contre les endpoints GET inconnus.
+
+**Override `Controller::smartyOutputContent`** (toujours le point sensible) : c'est la méthode de rendu héritée de PS 1.6.
+Elle existe encore en 1.7 (thème classique) mais l'override est intrusif et **doit être validé sur 1.7.6** — si non pris,
+le module ne casse rien mais ne **stocke** rien (fail-safe).
+
+### Compatibilité PHP — re-vérifiée
+`php -l` **OK sur 7.0, 7.2, 7.4, 8.0, 8.1, 8.2** (module renommé + les 2 overrides + `index.php`).
+
+### Fit-for-purpose — « est-ce ce qu'on a besoin ? »
+**Besoin initial** : réduire les *on-disk temp tables* MariaDB de vm150, causées par la requête de listing catégorie
+**anonyme** du site PrestaShop 1.7.6.1 (cache objet PS désactivé). Cf. [[vm150-prestashop-tmptables]].
+
+- ✅ **Adéquation** : servir avant `initContent()` supprime *exactement* la requête coupable sur un hit. C'est le seul
+  des modules FPC gratuits PS qui, une fois réécrit (F2), attaque la cause racine côté SQL et pas seulement le rendu PHP.
+- ⚠️ **Périmètre** : le gain ne porte que sur le **trafic anonyme / bots** (les visiteurs connectés et paniers non vides
+  bypassent). Pour ce site, c'est précisément le trafic qui génère les temp tables → cohérent. Mais ce **n'est pas** un
+  substitut au cache objet PrestaShop (Memcached/Redis), qui resterait bénéfique pour le back-office et les connectés.
+- ⚠️ **Risques** : (1) **non testé** fonctionnellement sur PS 1.7.6 ; (2) dépend d'un **override intrusif** ;
+  (3) invalidation sur **boutique vivante** — un bug de purge sert une page périmée (prix/stock) à un anonyme.
+- 🔁 **Alternatives** : (a) activer le **cache objet PS + Memcached/Redis** (moins risqué, gain plus large mais
+  ne supprime pas forcément la requête sur page froide) ; (b) **module commercial maintenu** pour un usage prod durable
+  (l'upstream est abandonné) ; (c) cache **reverse-proxy** (Varnish/Nginx micro-cache) — plus robuste mais hors PrestaShop.
+
+**Conclusion** : le module **répond au besoin** pour réduire les temp tables du trafic anonyme, et il est maintenant
+propre/sûr par défaut. Il **n'est pas** prêt prod tel quel : prérequis = **validation sur un PS 1.7.6 isolé** (jamais
+`preprod.multicolor-sa.com` = prod réelle) avec mesure réelle des `Created_tmp_disk_tables`. À court terme, le plus sûr
+reste d'**activer le cache objet PS** ; le FPC vient en complément une fois validé.

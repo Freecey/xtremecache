@@ -1,24 +1,34 @@
 <?php
 /**
- * Full page cache for PrestaShop 1.6 / 1.7 — anonymous visitors only.
+ * ESI Page Cache — full page cache for PrestaShop 1.6 / 1.7 (anonymous visitors only).
  *
- * @author Simone Salerno (original)
- * @author ESI / Cedric AUDRIT (PS1.7 rework: early serve, filesystem store, targeted invalidation)
+ * Serves cached HTML BEFORE the front controller runs, so the heavy
+ * category/product listing SQL (the source of MariaDB on-disk temp tables)
+ * is never executed on a cache hit.
  *
- * PHP compatibility: 7.0 -> 8.x (no typed properties, arrow fns, ??= or other 7.1+/7.4+ only syntax).
+ * Based on "xtremecache" by Simone Salerno (MIT) — substantially reworked by ESI:
+ * early serve (actionDispatcherBefore), dedicated filesystem store, tag-based
+ * targeted invalidation, BO clear-cache integration, page-type allow-list.
+ *
+ * @author  ESI / Cedric AUDRIT
+ * @author  Simone Salerno (original xtremecache)
+ * @license MIT
+ *
+ * PHP compatibility: 7.0 -> 8.x (no typed properties, arrow fns, ??= or other
+ * 7.1+/7.4+ only syntax). NB: PrestaShop 1.7.6 itself caps the runtime at PHP 7.2/7.3.
  */
 
 if (!defined('_PS_VERSION_')) {
     exit;
 }
 
-class Xtremecache extends Module
+class Esipagecache extends Module
 {
     /** @var int cache TTL in seconds */
     const TTL = 3600 * 24 * 7;
 
     /** @var bool send a debug header on cache hit */
-    const CUSTOMER_HEADER = true;
+    const DEBUG_HEADER = true;
 
     /** @var int[] languages to skip */
     const EXCLUDED_LANGS = array();
@@ -29,19 +39,33 @@ class Xtremecache extends Module
     /** @var int[] shops to skip */
     const EXCLUDE_SHOPS = array();
 
+    /**
+     * Front controllers (php_self) allowed to be cached. Read-only catalog
+     * pages only: never a form/token page, never an unknown dynamic module
+     * GET endpoint. The serve path is implicitly bounded to these because it
+     * can only return a key that was previously stored here.
+     *
+     * @var string[]
+     */
+    const CACHEABLE_PAGES = array(
+        'index', 'category', 'product', 'manufacturer', 'manufacturers',
+        'supplier', 'suppliers', 'new-products', 'best-sales', 'prices-drop',
+        'cms', 'stores', 'sitemap',
+    );
+
     public function __construct()
     {
-        $this->name = 'xtremecache';
+        $this->name = 'esipagecache';
         $this->tab = 'front_office_features';
-        $this->version = '1.2.0';
-        $this->author = 'Simone Salerno / ESI';
+        $this->version = '2.0.0';
+        $this->author = 'ESI (Cedric AUDRIT)';
         $this->need_instance = 0;
         $this->bootstrap = true;
 
         parent::__construct();
 
-        $this->displayName = $this->l('Xtreme cache');
-        $this->description = $this->l('Full page cache for PrestaShop (anonymous visitors).');
+        $this->displayName = $this->l('ESI Page Cache');
+        $this->description = $this->l('Full page cache for PrestaShop, served before the controller (anonymous visitors only).');
         $this->ps_versions_compliancy = array('min' => '1.6', 'max' => '1.7.99.99');
     }
 
@@ -50,8 +74,9 @@ class Xtremecache extends Module
         $this->createHooks();
 
         return parent::install()
-            && $this->registerHook('actionDispatcherBefore')   // F2: serve cache before controller init
+            && $this->registerHook('actionDispatcherBefore')   // serve cache before controller init
             && $this->registerHook('actionRequestComplete')     // store rendered page (via Controller override)
+            && $this->registerHook('actionEmptySmartyCache')    // BO "clear cache" button also clears the FPC
             && $this->registerHook('actionProductAdd')
             && $this->registerHook('actionProductUpdate')
             && $this->registerHook('actionProductSave')
@@ -68,6 +93,7 @@ class Xtremecache extends Module
         return parent::uninstall()
             && $this->unregisterHook('actionDispatcherBefore')
             && $this->unregisterHook('actionRequestComplete')
+            && $this->unregisterHook('actionEmptySmartyCache')
             && $this->unregisterHook('actionProductAdd')
             && $this->unregisterHook('actionProductUpdate')
             && $this->unregisterHook('actionProductSave')
@@ -78,9 +104,9 @@ class Xtremecache extends Module
     }
 
     /**
-     * F2 — serve the cached page BEFORE the controller runs, so the
-     * expensive category/product SQL (the source of on-disk temp tables)
-     * is never executed on a cache hit.
+     * Serve the cached page BEFORE the controller runs, so the expensive
+     * category/product SQL (the source of on-disk temp tables) is never
+     * executed on a cache hit.
      *
      * @param array $params
      */
@@ -92,8 +118,8 @@ class Xtremecache extends Module
 
         $html = $this->load($this->key());
         if ($html !== false) {
-            if (static::CUSTOMER_HEADER) {
-                header('X-Xtremecache: HIT');
+            if (static::DEBUG_HEADER) {
+                header('X-Esipagecache: HIT');
             }
             echo $html;
             exit;
@@ -116,15 +142,28 @@ class Xtremecache extends Module
         if (function_exists('http_response_code') && http_response_code() !== 200) {
             return;
         }
-        if (!$this->isCacheableRequest()) {
+        if (!$this->isCacheableRequest() || !$this->isCacheablePage()) {
             return;
         }
 
         $this->store($this->key(), $params['output'], $this->collectTags());
     }
 
+    /**
+     * The BO "Clear cache" button (Advanced Parameters > Performance) triggers
+     * actionEmptySmartyCache via the AdminPerformanceController override:
+     * clearing the Smarty cache must also clear the full page cache, otherwise
+     * an admin "clear cache" would leave stale FPC pages live.
+     *
+     * @param array $params
+     */
+    public function hookActionEmptySmartyCache($params)
+    {
+        $this->flush();
+    }
+
     /* ----------------------------------------------------------------------
-     * F4 — targeted invalidation
+     * Targeted invalidation
      * Frequent events (product save/add/update) purge only the affected
      * entries; rare structural events (product delete, any category change)
      * fall back to a safe full flush.
@@ -219,6 +258,22 @@ class Xtremecache extends Module
     }
 
     /**
+     * Store-time guard: only cache known read-only catalog pages. Prevents
+     * caching an unknown/dynamic module GET endpoint that happens to render
+     * through smartyOutputContent. The controller is known here (unlike at
+     * dispatch time).
+     *
+     * @return bool
+     */
+    private function isCacheablePage()
+    {
+        $controller = $this->context->controller;
+        $self = isset($controller->php_self) ? (string) $controller->php_self : '';
+
+        return in_array($self, static::CACHEABLE_PAGES, true);
+    }
+
+    /**
      * Cache key — built ONLY from data identical at dispatch and store time.
      *
      * @return string
@@ -288,7 +343,7 @@ class Xtremecache extends Module
                     $tags[] = 'category:' . (int) $idc;
                 }
             }
-        } elseif (in_array($self, array('index', 'new-products', 'best-sales', 'prices-drop', 'search', 'manufacturer', 'supplier'), true)) {
+        } elseif (in_array($self, array('index', 'new-products', 'best-sales', 'prices-drop', 'manufacturer', 'manufacturers', 'supplier', 'suppliers'), true)) {
             $tags[] = 'listing';
         }
 
@@ -325,7 +380,7 @@ class Xtremecache extends Module
      */
     private function getCacheDir()
     {
-        $dir = _PS_CACHE_DIR_ . 'xtremecache' . DIRECTORY_SEPARATOR;
+        $dir = _PS_CACHE_DIR_ . 'esipagecache' . DIRECTORY_SEPARATOR;
         if (!is_dir($dir)) {
             @mkdir($dir, 0755, true);
         }
@@ -373,7 +428,7 @@ class Xtremecache extends Module
      */
     private function store($key, $html, array $tags)
     {
-        $payload = $html . "\n<!-- xtremecache " . date('Y-m-d H:i:s') . " -->";
+        $payload = $html . "\n<!-- esipagecache " . date('Y-m-d H:i:s') . " -->";
         $file = $this->getCacheDir() . $key . '.html';
 
         // atomic write: temp file + rename, so a concurrent reader never
@@ -457,7 +512,7 @@ class Xtremecache extends Module
             $hook = new Hook();
             $hook->name = 'actionRequestComplete';
             $hook->title = 'actionRequestComplete';
-            $hook->description = 'Full rendered page (xtremecache store)';
+            $hook->description = 'Full rendered page (esipagecache store)';
             $hook->position = 1;
             $hook->save();
         }
