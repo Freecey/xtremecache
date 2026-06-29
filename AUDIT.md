@@ -325,3 +325,42 @@ Round 8 = **zéro bug**, une garde d'en-tête (C8) et de la doc. C'est exactemen
 rendements décroissants** : la revue statique ne produit plus que du durcissement cosmétique. **Tous les axes statiques
 sont épuisés.** La seule étape qui peut encore révéler quelque chose est **dynamique** : le test fonctionnel sur PS 1.7.6
 isolé. Recommandation ferme : arrêter la revue statique et passer au test fonctionnel (+ mesure `Created_tmp_disk_tables`).
+
+---
+
+## Test fonctionnel v2.1.0 (2026-06-29) — PrestaShop 1.7.6.1 RÉEL (Docker), DB live multicolor
+
+Environnement : copie **isolée** du site `www.multicolor-sa.com` (PS 1.7.6.1, PHP 7.3) montée en Docker à partir d'un
+dump de `c47_preprod_DB` + des fichiers `web1252` (hors img/download). C'est **exactement** le test que la revue statique
+réclamait depuis 8 rounds — et il a révélé un bug que la relecture **ne pouvait pas** voir sans le code réel de PS 1.7.6.
+
+| # | Constat | Gravité | Statut |
+|---|---|---|---|
+| C9 | **L'override portait sur `Controller`, mais `FrontControllerCore` définit SA PROPRE `smartyOutputContent()`** (PS 1.7.6, ligne 672) qui **masque** tout override de `Controller`. Conséquence : l'override n'était **jamais appelé**, `actionRequestComplete` jamais émis, **rien n'était stocké** (0 fichier de cache). Le module était **inerte** — y compris tel que déjà déployé sur la prod | 🔴 bloquant | ✅ **corrigé** : override déplacé sur **`FrontController`** (`class FrontController extends FrontControllerCore`). C'est la méthode réellement appelée par `display()` pour les pages catégorie/produit/listing |
+
+**Validations (toutes ✅, après C9)** sur la catégorie 105 « Peinture » (788 produits) :
+- **Serve avant contrôleur** : `actionDispatcherBefore` se déclenche bien en 1.7.6 (Dispatcher.php:354) ; sur un hit le contrôleur ne tourne pas.
+- **Mesure MariaDB (le but métier)** : par vue —
+  - sans cache / miss : **+7 `Created_tmp_disk_tables`**, +106 tmp_tables, +773 `Com_select` ;
+  - **hit** : **+0 `Created_tmp_disk_tables`**, +7 tmp_tables, +91 `Com_select` (≈ bootstrap PS avant dispatch, **pas** la requête de listing).
+  → Le FPC **élimine** les temp tables sur disque du trafic catégorie anonyme (la source exacte de l'alerte Zabbix vm150).
+- **Parité de rendu** : page hit = page miss **octet pour octet** (au commentaire `<!-- esipagecache -->` près, +42 o).
+- **Exclusions** : AJAX et POST **jamais** servis du cache.
+- **Invalidation ciblée** : `actionProductUpdate` sur un produit de la cat. 105 (catégories [98,105]) **purge** l'entrée cat105 (1→0 fichier ; hit suivant = miss).
+- **Rendu navigateur (Playwright)** : page cachée → HTTP 200, h1 « Peinture », 12 tuiles produit ; seules erreurs console = ressources externes en 403 (widgets), hors module.
+
+### ⚠️ Impact sur la PROD (constat de session)
+Le module v2.0.6 a été **déployé et activé sur la prod** `www.multicolor-sa.com` (ps_module id 183, hooks enregistrés)
+mais, à cause de C9 (override sur `Controller`), il est **inerte** : **0 fichier de cache**, aucun header `X-Esipagecache`,
+aucune page servie depuis le cache. **Bonne nouvelle** : il ne **casse rien** (prod saine, 200 partout) — il n'apporte
+juste **aucun gain**. **À faire pour activer réellement le cache en prod** : déployer l'override **`FrontController`**
+(v2.1.0), retirer l'ancien `override/classes/controller/Controller.php`, **régénérer le cache** (vider `var/cache/` →
+`class_index.php`), puis vérifier le header `X-Esipagecache: HIT` et la chute des `Created_tmp_disk_tables`.
+NB : l'override **`AdminPerformanceController`** n'a pas été copié à la racine lors de l'install prod (absent de
+`class_index`) → le bouton « Vider le cache » du BO ne purgera pas le FPC tant qu'il n'est pas réinstallé proprement.
+
+### Verdict v2.1.0
+Le module est désormais **fonctionnellement prouvé** sur PS 1.7.6.1 réel : il atteint l'objectif métier (0 temp table
+disque sur hit), sans altérer le rendu, avec exclusions et invalidation correctes. C9 confirme la valeur du test
+dynamique. Prochaine étape côté prod : redéployer v2.1.0 (override FrontController) + purge `var/cache`, en fenêtre creuse,
+puis mesurer la baisse réelle de l'alerte Zabbix.

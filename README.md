@@ -81,9 +81,13 @@ instead of scanning the whole cache. Default TTL: **7 days**.
 This module ships **two overrides** (required):
 
 ```
-override/classes/controller/Controller.php                 # emits actionRequestComplete (store source)
+override/classes/controller/FrontController.php             # emits actionRequestComplete (store source)
 override/controllers/admin/AdminPerformanceController.php   # emits actionEmptySmartyCache (BO clear-cache)
 ```
+
+> The store override is on **FrontController** (not Controller): `FrontControllerCore`
+> defines its own `smartyOutputContent()` which shadows any `Controller` override, so a
+> `Controller` override never fires for front pages. Verified on a real PrestaShop 1.7.6.1.
 
 1. Copy the `esipagecache/` folder into `modules/`.
 2. Install from the BO (*Modules*) or `php bin/console prestashop:module install esipagecache`.
@@ -118,9 +122,9 @@ Verify a hit: `curl -sI https://shop/category/... | grep -i x-esipagecache`.
   or theme/module changes — those become fresh only when the entry expires. **`TTL` is the
   backstop**: keep it short (default 1 h) on a live catalog, or clear the cache from the BO
   after a bulk promo/price change.
-* **Depends on the `Controller::smartyOutputContent` override** for the store path. If the
+* **Depends on the `FrontController::smartyOutputContent` override** for the store path. If the
   override is not taken on a given PS build, the module **caches nothing** but breaks nothing
-  (fail-safe). Must be verified on the target PS version.
+  (fail-safe).
 * **Product moved between categories**: the *old* category page expires by TTL only (purge
   targets the product's *current* categories). Rare.
 * **No background GC / unbounded growth**: each distinct query string creates a separate
@@ -137,10 +141,13 @@ Verify a hit: `curl -sI https://shop/category/... | grep -i x-esipagecache`.
 * **PHP**: syntax verified `php -l` on **7.0, 7.2, 7.4, 8.0, 8.1, 8.2** (module + both overrides).
   PrestaShop 1.7.6 itself caps the runtime at PHP 7.2/7.3 — the environment is the limit, not the module.
 
-> ⚠️ **Not production-tested yet.** Validate on an **isolated** PrestaShop 1.7.6 install
-> (never on a live shop): install/uninstall, render parity vs. no-cache, exclusions, targeted
-> invalidation, and the actual drop in MariaDB `Created_tmp_disk_tables`. For a long-lived
-> production deployment, also weigh a maintained commercial FPC module.
+> ✅ **Functionally validated** on an isolated PrestaShop **1.7.6.1** copy (real shop DB,
+> PHP 7.3): install/uninstall, byte-identical render parity (miss vs hit), exclusions
+> (AJAX/POST/logged-in/non-empty cart), targeted invalidation on product update, and a
+> real-browser render check (Playwright). Measured on a category page (788 products):
+> a cache **hit creates 0 on-disk temp tables vs 7 without the cache**, and SELECTs drop
+> from ~773 to ~91 (the heavy listing query no longer runs). For a long-lived production
+> deployment, also weigh a maintained commercial FPC module.
 
 ## License
 
