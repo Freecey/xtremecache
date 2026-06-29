@@ -53,11 +53,20 @@ class Esipagecache extends Module
         'cms', 'stores', 'sitemap',
     );
 
+    /**
+     * Cache key computed at dispatch time and reused at store time, so the
+     * key cannot diverge if the controller mutates the language/currency
+     * cookie during init() (URL/cookie language or currency switch).
+     *
+     * @var string|null
+     */
+    private $currentKey = null;
+
     public function __construct()
     {
         $this->name = 'esipagecache';
         $this->tab = 'front_office_features';
-        $this->version = '2.0.1';
+        $this->version = '2.0.2';
         $this->author = 'ESI (Cedric AUDRIT)';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -116,7 +125,12 @@ class Esipagecache extends Module
             return;
         }
 
-        $html = $this->load($this->key());
+        // compute the key ONCE here and reuse it at store time (see $currentKey):
+        // the controller may switch language/currency during init(), which would
+        // otherwise make the store key differ from this serve key -> permanent miss.
+        $this->currentKey = $this->key();
+
+        $html = $this->load($this->currentKey);
         if ($html !== false) {
             if (static::DEBUG_HEADER) {
                 header('X-Esipagecache: HIT');
@@ -146,7 +160,10 @@ class Esipagecache extends Module
             return;
         }
 
-        $this->store($this->key(), $params['output'], $this->collectTags());
+        // reuse the key stashed at dispatch time; fall back to recomputing it
+        // only if the dispatch hook did not run on this PS build.
+        $key = $this->currentKey !== null ? $this->currentKey : $this->key();
+        $this->store($key, $params['output'], $this->collectTags());
     }
 
     /**
