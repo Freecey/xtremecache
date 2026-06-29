@@ -113,8 +113,11 @@ Verify a hit: `curl -sI https://shop/category/... | grep -i x-esipagecache`.
   (fail-safe). Must be verified on the target PS version.
 * **Product moved between categories**: the *old* category page expires by TTL only (purge
   targets the product's *current* categories). Rare.
-* **No background GC**: expired files are removed on access (TTL) or on flush. Add a cron
-  purge if the URL space is very large.
+* **No background GC / unbounded growth**: each distinct query string creates a separate
+  entry and expired files are only removed on access (TTL) or on flush. A crawler (or an
+  attacker) hitting `?x=1`, `?x=2`… can fill the disk. **Mitigate with a cron purge**, a disk
+  quota, and monitoring of `var/cache/<env>/esipagecache/`. Not bounded by a param allow-list
+  on purpose (would break pagination / sort / layered navigation, all legitimate params).
 * **Device in key**: triples entries on themes that serve different HTML per device; harmless
   on a fully responsive theme.
 

@@ -57,7 +57,7 @@ class Esipagecache extends Module
     {
         $this->name = 'esipagecache';
         $this->tab = 'front_office_features';
-        $this->version = '2.0.0';
+        $this->version = '2.0.1';
         $this->author = 'ESI (Cedric AUDRIT)';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -488,6 +488,10 @@ class Esipagecache extends Module
         $dir = $this->getCacheDir();
         foreach ((array) glob($dir . '*.html') as $file) {
             @unlink($file);
+        }
+        // also drop orphan temp files left by an interrupted atomic write
+        foreach ((array) glob($dir . '*.tmp') as $tmp) {
+            @unlink($tmp);
         }
 
         $tagsRoot = $dir . 'tags' . DIRECTORY_SEPARATOR;
