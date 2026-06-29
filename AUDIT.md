@@ -304,3 +304,24 @@ fragile. À ce stade, après 7 rounds, **tous les axes ont été couverts** : co
 (F5), invalidation ciblée (F4), rendu (C1), clé (C3), entrées (C4), concurrence (C5/C6), fraîcheur (C7). **Aucun bug connu
 ne subsiste.** Le seul livrable à valeur ajoutée restante est **hors revue statique** : le test fonctionnel sur PS 1.7.6
 isolé (rendu, exclusions, invalidation, mesure `Created_tmp_disk_tables`).
+
+---
+
+## Review v2.0.6 (2026-06-29) — round 8, en-têtes HTTP du serve + packaging
+
+Aucun **bug** trouvé. Une amélioration de robustesse + deux vérifications de packaging/doc.
+
+| # | Constat | Gravité | Statut |
+|---|---|---|---|
+| C8 | Sur un **hit**, `echo $html; exit;` court-circuite tout PrestaShop, donc aussi l'en-tête `Content-Type`/charset que le contrôleur aurait posé → on dépendait du `default_charset` du serveur (UTF-8 par défaut en PHP 7+, mais pas garanti) | 🟡 robustesse | ✅ **corrigé** : `Content-Type: text/html; charset=utf-8` envoyé explicitement sur le hit (sous garde `!headers_sent()`) |
+| — | `.gitattributes` / `.gitignore` : **pas d'`export-ignore`**, n'ignorent que du junk Windows/OSX → aucun fichier du module exclu d'un `git archive`/packaging | ✅ sain | rien à faire |
+| — | Doc : le conflit d'override possible à l'install ne concernait pas que `Controller` mais aussi `AdminPerformanceController` | 🟢 doc | ✅ README généralisé |
+
+### Compatibilité PHP — re-vérifiée
+`php -l` **OK 7.0 → 8.2**.
+
+### Verdict v2.0.6
+Round 8 = **zéro bug**, une garde d'en-tête (C8) et de la doc. C'est exactement le profil annoncé du **plancher des
+rendements décroissants** : la revue statique ne produit plus que du durcissement cosmétique. **Tous les axes statiques
+sont épuisés.** La seule étape qui peut encore révéler quelque chose est **dynamique** : le test fonctionnel sur PS 1.7.6
+isolé. Recommandation ferme : arrêter la revue statique et passer au test fonctionnel (+ mesure `Created_tmp_disk_tables`).
