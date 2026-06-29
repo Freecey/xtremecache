@@ -3,7 +3,9 @@
  * Full page cache for PrestaShop 1.6 / 1.7 — anonymous visitors only.
  *
  * @author Simone Salerno (original)
- * @author ESI / Cedric AUDRIT (PS1.7 rework: early serve at dispatcher, filesystem store)
+ * @author ESI / Cedric AUDRIT (PS1.7 rework: early serve, filesystem store, targeted invalidation)
+ *
+ * PHP compatibility: 7.0 -> 8.x (no typed properties, arrow fns, ??= or other 7.1+/7.4+ only syntax).
  */
 
 if (!defined('_PS_VERSION_')) {
@@ -14,9 +16,6 @@ class Xtremecache extends Module
 {
     /** @var int cache TTL in seconds */
     const TTL = 3600 * 24 * 7;
-
-    /** @var bool flush whole cache on catalog updates */
-    const REACTIVE = true;
 
     /** @var bool send a debug header on cache hit */
     const CUSTOMER_HEADER = true;
@@ -34,7 +33,7 @@ class Xtremecache extends Module
     {
         $this->name = 'xtremecache';
         $this->tab = 'front_office_features';
-        $this->version = '1.1.0';
+        $this->version = '1.2.0';
         $this->author = 'Simone Salerno / ESI';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -53,13 +52,13 @@ class Xtremecache extends Module
         return parent::install()
             && $this->registerHook('actionDispatcherBefore')   // F2: serve cache before controller init
             && $this->registerHook('actionRequestComplete')     // store rendered page (via Controller override)
-            && $this->registerHook('actionCategoryAdd')
-            && $this->registerHook('actionCategoryUpdate')
-            && $this->registerHook('actionCategoryDelete')
             && $this->registerHook('actionProductAdd')
             && $this->registerHook('actionProductUpdate')
+            && $this->registerHook('actionProductSave')
             && $this->registerHook('actionProductDelete')
-            && $this->registerHook('actionProductSave');
+            && $this->registerHook('actionCategoryAdd')
+            && $this->registerHook('actionCategoryUpdate')
+            && $this->registerHook('actionCategoryDelete');
     }
 
     public function uninstall()
@@ -69,19 +68,21 @@ class Xtremecache extends Module
         return parent::uninstall()
             && $this->unregisterHook('actionDispatcherBefore')
             && $this->unregisterHook('actionRequestComplete')
-            && $this->unregisterHook('actionCategoryAdd')
-            && $this->unregisterHook('actionCategoryUpdate')
-            && $this->unregisterHook('actionCategoryDelete')
             && $this->unregisterHook('actionProductAdd')
             && $this->unregisterHook('actionProductUpdate')
+            && $this->unregisterHook('actionProductSave')
             && $this->unregisterHook('actionProductDelete')
-            && $this->unregisterHook('actionProductSave');
+            && $this->unregisterHook('actionCategoryAdd')
+            && $this->unregisterHook('actionCategoryUpdate')
+            && $this->unregisterHook('actionCategoryDelete');
     }
 
     /**
      * F2 — serve the cached page BEFORE the controller runs, so the
      * expensive category/product SQL (the source of on-disk temp tables)
      * is never executed on a cache hit.
+     *
+     * @param array $params
      */
     public function hookActionDispatcherBefore($params)
     {
@@ -101,7 +102,10 @@ class Xtremecache extends Module
 
     /**
      * Store the fully rendered page (emitted by the Controller override
-     * through the custom "actionRequestComplete" hook).
+     * through the custom "actionRequestComplete" hook), with cache tags
+     * for targeted invalidation.
+     *
+     * @param array $params
      */
     public function hookActionRequestComplete(array $params)
     {
@@ -116,23 +120,50 @@ class Xtremecache extends Module
             return;
         }
 
-        $this->store($this->key(), $params['output']);
+        $this->store($this->key(), $params['output'], $this->collectTags());
     }
 
-    /**
-     * Catalog-change hooks (actionProduct / actionCategory ...) are not defined
-     * as real methods, so they land here -> flush the whole cache (safe: no
-     * stale page). Targeted invalidation is a possible future improvement.
-     */
-    public function __call($name, $arguments)
+    /* ----------------------------------------------------------------------
+     * F4 — targeted invalidation
+     * Frequent events (product save/add/update) purge only the affected
+     * entries; rare structural events (product delete, any category change)
+     * fall back to a safe full flush.
+     * -------------------------------------------------------------------- */
+
+    public function hookActionProductSave($params)
     {
-        if (static::REACTIVE && 0 === strpos(strtolower($name), 'hookaction')) {
-            $this->flush();
+        $this->invalidateProduct($params);
+    }
 
-            return null;
-        }
+    public function hookActionProductAdd($params)
+    {
+        $this->invalidateProduct($params);
+    }
 
-        return parent::__call($name, $arguments);
+    public function hookActionProductUpdate($params)
+    {
+        $this->invalidateProduct($params);
+    }
+
+    public function hookActionProductDelete($params)
+    {
+        // categories may already be detached on delete -> safe full flush
+        $this->flush();
+    }
+
+    public function hookActionCategoryAdd($params)
+    {
+        $this->flush();         // structure change affects the global menu
+    }
+
+    public function hookActionCategoryUpdate($params)
+    {
+        $this->flush();
+    }
+
+    public function hookActionCategoryDelete($params)
+    {
+        $this->flush();
     }
 
     /**
@@ -188,8 +219,7 @@ class Xtremecache extends Module
     }
 
     /**
-     * Cache key — built ONLY from data identical at dispatch and store time,
-     * so a page stored on a miss is found again on the next request.
+     * Cache key — built ONLY from data identical at dispatch and store time.
      *
      * @return string
      */
@@ -207,8 +237,7 @@ class Xtremecache extends Module
     }
 
     /**
-     * Request URI with tracking params stripped, to avoid cache fragmentation
-     * (utm_*, fbclid, gclid, mc_*, _ga...).
+     * Request URI with tracking params stripped (utm_*, fbclid, gclid...).
      *
      * @return string
      */
@@ -220,6 +249,7 @@ class Xtremecache extends Module
             return $uri;
         }
 
+        $query = array();
         parse_str($parts[1], $query);
         foreach (array_keys($query) as $param) {
             if (preg_match('/^(utm_|fbclid|gclid|mc_|_ga|_hsenc|_hsmi)/i', (string) $param)) {
@@ -233,6 +263,64 @@ class Xtremecache extends Module
     }
 
     /**
+     * Tags describing the current page, for targeted invalidation.
+     * NB: category pages are tagged ONLY with their own id (never a broad
+     * "listing" tag) so a single product update does not purge every category.
+     *
+     * @return string[]
+     */
+    private function collectTags()
+    {
+        $tags = array();
+        $controller = $this->context->controller;
+        $self = isset($controller->php_self) ? $controller->php_self : '';
+
+        if ($self === 'category') {
+            $id = (int) Tools::getValue('id_category');
+            if ($id > 0) {
+                $tags[] = 'category:' . $id;
+            }
+        } elseif ($self === 'product') {
+            $idp = (int) Tools::getValue('id_product');
+            if ($idp > 0) {
+                $tags[] = 'product:' . $idp;
+                foreach ((array) Product::getProductCategories($idp) as $idc) {
+                    $tags[] = 'category:' . (int) $idc;
+                }
+            }
+        } elseif (in_array($self, array('index', 'new-products', 'best-sales', 'prices-drop', 'search', 'manufacturer', 'supplier'), true)) {
+            $tags[] = 'listing';
+        }
+
+        return $tags;
+    }
+
+    /**
+     * Purge cache entries affected by a product change.
+     *
+     * @param array $params
+     */
+    private function invalidateProduct($params)
+    {
+        $id = 0;
+        if (isset($params['id_product'])) {
+            $id = (int) $params['id_product'];
+        } elseif (isset($params['product']) && isset($params['product']->id)) {
+            $id = (int) $params['product']->id;
+        }
+
+        $tags = array('listing');           // home / new-products / best-sales / prices-drop ...
+        if ($id > 0) {
+            $tags[] = 'product:' . $id;
+            foreach ((array) Product::getProductCategories($id) as $idc) {
+                $tags[] = 'category:' . (int) $idc;
+            }
+        }
+
+        $this->purgeTags($tags);
+    }
+
+    /**
      * @return string
      */
     private function getCacheDir()
@@ -243,6 +331,19 @@ class Xtremecache extends Module
         }
 
         return $dir;
+    }
+
+    /**
+     * Reverse index directory for a tag (so a purge is O(entries-of-tag),
+     * not O(whole-cache) — important during bulk imports).
+     *
+     * @param string $tag
+     * @return string
+     */
+    private function tagDir($tag)
+    {
+        return $this->getCacheDir() . 'tags' . DIRECTORY_SEPARATOR
+            . preg_replace('/[^a-z0-9_]+/i', '_', $tag) . DIRECTORY_SEPARATOR;
     }
 
     /**
@@ -265,27 +366,83 @@ class Xtremecache extends Module
     }
 
     /**
-     * @param string $key
-     * @param string $html
+     * @param string   $key
+     * @param string   $html
+     * @param string[] $tags
      * @return bool
      */
-    private function store($key, $html)
+    private function store($key, $html, array $tags)
     {
         $payload = $html . "\n<!-- xtremecache " . date('Y-m-d H:i:s') . " -->";
+        $file = $this->getCacheDir() . $key . '.html';
 
-        return (bool) @file_put_contents($this->getCacheDir() . $key . '.html', $payload, LOCK_EX);
+        // atomic write: temp file + rename, so a concurrent reader never
+        // gets a half-written page.
+        $tmp = $file . '.' . getmypid() . '.tmp';
+        if (@file_put_contents($tmp, $payload, LOCK_EX) === false) {
+            return false;
+        }
+        if (!@rename($tmp, $file)) {
+            @unlink($tmp);
+
+            return false;
+        }
+
+        foreach (array_unique($tags) as $tag) {
+            $dir = $this->tagDir($tag);
+            if (!is_dir($dir)) {
+                @mkdir($dir, 0755, true);
+            }
+            @touch($dir . $key);
+        }
+
+        return true;
     }
 
     /**
-     * Delete every cached page.
+     * Delete every cache entry referenced by any of the given tags.
+     *
+     * @param string[] $tags
+     * @return bool
+     */
+    private function purgeTags(array $tags)
+    {
+        foreach (array_unique($tags) as $tag) {
+            $dir = $this->tagDir($tag);
+            if (!is_dir($dir)) {
+                continue;
+            }
+            foreach ((array) glob($dir . '*') as $marker) {
+                $key = basename($marker);
+                @unlink($this->getCacheDir() . $key . '.html');
+                @unlink($marker);
+            }
+            @rmdir($dir);
+        }
+
+        return true;
+    }
+
+    /**
+     * Delete the whole cache (pages + tag index).
      *
      * @return bool
      */
     private function flush()
     {
-        foreach ((array) glob($this->getCacheDir() . '*.html') as $file) {
+        $dir = $this->getCacheDir();
+        foreach ((array) glob($dir . '*.html') as $file) {
             @unlink($file);
         }
+
+        $tagsRoot = $dir . 'tags' . DIRECTORY_SEPARATOR;
+        foreach ((array) glob($tagsRoot . '*', GLOB_ONLYDIR) as $tagDir) {
+            foreach ((array) glob($tagDir . DIRECTORY_SEPARATOR . '*') as $marker) {
+                @unlink($marker);
+            }
+            @rmdir($tagDir);
+        }
+        @rmdir($tagsRoot);
 
         return true;
     }

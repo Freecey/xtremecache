@@ -14,7 +14,7 @@
 | F1 | `ps_versions_compliancy` plafonné à `1.6.99.99` → **n'installe pas** sur 1.7.6 | 🔴 bloquant | ✅ **corrigé** (→ 1.7.99.99) |
 | F2 | Cache servi sur `hookDisplayHeader` = **après** `initContent()` → la requête SQL lourde **a déjà tourné** | 🔴 majeur | ✅ **corrigé** (serve sur `actionDispatcherBefore`) — **à tester sur 1.7.6** |
 | F3 | Module écoute `actionResponse`/`html` alors que l'override émet `actionRequestComplete`/`output` → **rien n'est stocké** | 🟠 bug fonctionnel | ✅ **corrigé** |
-| F4 | Invalidation = `flush()` **total** du cache à chaque modif produit/catégorie | 🟡 crude | conservé (sûr) ; ciblé = amélioration future |
+| F4 | Invalidation = `flush()` **total** du cache à chaque modif produit/catégorie | 🟡 crude | ✅ **corrigé** (invalidation **ciblée par tags** sur maj produit ; flush total pour delete/catégorie) |
 | F5 | Stockage via `Cache::getInstance()` = **Memcached 64 Mo partagé** entre ~168 sites | 🟠 dimensionnement | ✅ **corrigé** (stockage **filesystem** dédié) |
 | F6 | Override de `Controller::smartyOutputContent` (API 1.6) ; libs `vendor/` (phpfastcache, predis) **inutilisées** | 🟡 robustesse/poids | ✅ `vendor/` **supprimé** ; override **conservé, à valider sur 1.7.6** |
 | + | Améliorations : **200-only**, **panier vide** garanti, normalisation params tracking (utm/fbclid…) | 🟢 | ✅ ajouté |
@@ -89,9 +89,50 @@ préfixe dédié, et augmenter la mémoire si Memcached est conservé.
    - rendu identique vs sans cache ; exclusions OK (connecté / panier non vide / AJAX / POST / dev) ;
    - invalidation sur modif produit/prix/stock ; pages de formulaire (tokens) cohérentes ;
    - **mesure réelle** de la baisse des `Created_tmp_disk_tables` côté MariaDB (objectif).
-2. Améliorations possibles ultérieures : invalidation **ciblée** (F4) au lieu du flush total ; purge programmée du dossier
-   de cache ; éventuel backend Memcached **dédié** si volume élevé.
+2. Améliorations possibles ultérieures (cf. Review v1.2.0) : purge programmée (GC) du dossier de cache ; gestion du
+   déplacement de produit entre catégories ; éventuel backend Memcached **dédié** si volume élevé.
 
 > ⚠️ **Avertissement prod** : `preprod.multicolor-sa.com` est en réalité la **PROD** (DB jamais renommée, simple alias
 > d'URL). Ne **pas** installer/tester ce module dessus : utiliser une **copie isolée**. Vu l'état « abandonné » de l'upstream,
 > pour un usage production durable, évaluer aussi un **module commercial maintenu**.
+
+---
+
+## Review v1.2.0 (2026-06-29) — invalidation ciblée (F4) + compatibilité PHP
+
+### F4 — invalidation ciblée (implémentée)
+- Les hooks catalogue sont désormais de **vraies méthodes** (plus de `__call`).
+- **Tagging au stockage** (`collectTags()`) : page catégorie → `category:<id>` **seulement** (jamais un tag global,
+  sinon une maj produit purgerait toutes les catégories) ; page produit → `product:<id>` + `category:<ses catégories>` ;
+  home/new-products/best-sales/prices-drop/search/manufacturer/supplier → `listing`.
+- **Maj produit** (`actionProductSave/Add/Update`, événements fréquents) → purge **ciblée** :
+  `product:<id>` + `category:<catégories du produit>` + `listing`. Les autres catégories restent en cache.
+- **Suppression produit** et **tout changement catégorie** → **flush total** (rare ; touche le menu global) — choix sûr.
+- **Index inversé par tag** (`tags/<tag>/<key>`) → une purge coûte O(entrées du tag), pas O(cache entier) :
+  important pendant les imports en masse.
+
+### Compatibilité PHP — vérifiée
+`php -l` **OK sur 7.0, 7.2, 7.4, 8.0, 8.1, 8.2** (module + override). Code volontairement en syntaxe PHP 7.0
+(pas de propriétés typées, fonctions fléchées, `??=`…). Casts défensifs `(string)`/`(int)`/`(array)` pour éviter les
+dépréciations PHP 8.1 (null vers fonctions string). Pas de propriété dynamique (dépréciation 8.2). 
+> NB : PrestaShop **1.7.6 lui-même** ne tourne officiellement que jusqu'à PHP 7.2/7.3 — c'est l'environnement qui borne,
+> pas le module. Le module est prêt pour une future montée PHP/PrestaShop.
+
+### Robustesse ajoutée
+- **Écriture atomique** du cache (`fichier.tmp` + `rename()`) → un lecteur concurrent ne reçoit jamais une page tronquée.
+- Cache **200-only**, **anonyme + panier vide**, clé indépendante des paramètres de tracking.
+
+### Points résiduels / limites connues (non bloquants)
+1. **Clé & langue** : `id_lang` lu depuis le cookie au dispatch ; pour un tout premier visiteur sans cookie, la 1ʳᵉ requête
+   est de toute façon un *miss*. L'URL (incluse dans la clé) reste le différenciateur principal entre langues.
+2. **Déplacement de produit entre catégories** : l'**ancienne** catégorie n'est pas purgée par la maj (on purge les
+   catégories *actuelles*) → page de l'ancienne catégorie périmée jusqu'au TTL. Rare.
+3. **Pas de GC** des fichiers expirés : ils ne sont supprimés qu'à l'accès (TTL) ou au flush. Prévoir un cron de purge
+   si le volume d'URLs explose.
+4. **Dépendance à l'override** `Controller::smartyOutputContent` pour le stockage : si l'override n'est pas pris en 1.7.6,
+   le module ne casse rien mais **ne cache rien** (fail-safe). À valider en test.
+
+### Verdict
+Le module est cohérent, sûr par défaut (anonyme/200/atomique), et l'invalidation ciblée évite le *cold cache* sur les
+syncs produit fréquents. **Reste obligatoire** : test fonctionnel + mesure sur un **PrestaShop 1.7.6 isolé** (cf. plan ci-dessus)
+avant tout usage sur la prod (`preprod.multicolor-sa.com` = prod réelle).
