@@ -100,7 +100,7 @@ Tunables are class constants in `esipagecache.php`:
 
 | Constant | Default | Purpose |
 |---|---|---|
-| `TTL` | `604800` (7 d) | entry lifetime |
+| `TTL` | `3600` (1 h) | entry lifetime **and** freshness backstop for un-hooked changes (see below) |
 | `DEBUG_HEADER` | `true` | send `X-Esipagecache: HIT` on a cache hit |
 | `CACHEABLE_PAGES` | catalog pages | which `php_self` may be cached |
 | `EXCLUDED_LANGS` / `EXCLUDE_CURRENCIES` / `EXCLUDE_SHOPS` | `[]` | per-context opt-out |
@@ -111,6 +111,12 @@ Verify a hit: `curl -sI https://shop/category/... | grep -i x-esipagecache`.
 
 * **Gains apply to anonymous/bot traffic only.** Logged-in customers and non-empty carts
   always bypass the cache (by design).
+* **Invalidation coverage**: the explicit hooks purge **product** (save/add/update/delete)
+  and **category** changes immediately. They do **not** cover specific prices / catalog
+  price rules (promos), stock crossing to zero, CMS content, supplier/manufacturer edits,
+  or theme/module changes — those become fresh only when the entry expires. **`TTL` is the
+  backstop**: keep it short (default 1 h) on a live catalog, or clear the cache from the BO
+  after a bulk promo/price change.
 * **Depends on the `Controller::smartyOutputContent` override** for the store path. If the
   override is not taken on a given PS build, the module **caches nothing** but breaks nothing
   (fail-safe). Must be verified on the target PS version.

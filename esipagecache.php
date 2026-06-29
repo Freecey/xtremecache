@@ -24,8 +24,17 @@ if (!defined('_PS_VERSION_')) {
 
 class Esipagecache extends Module
 {
-    /** @var int cache TTL in seconds */
-    const TTL = 3600 * 24 * 7;
+    /**
+     * Cache TTL in seconds. This is ALSO the freshness backstop for every
+     * content change the explicit hooks do NOT cover: specific prices / catalog
+     * price rules (promos), stock crossing to zero, CMS content, supplier /
+     * manufacturer edits, theme/module changes. Keep it short on a live catalog
+     * (1h by default); raise it only if you accept staler pages for a bigger hit
+     * ratio. The targeted hooks still purge product/category changes immediately.
+     *
+     * @var int
+     */
+    const TTL = 3600;
 
     /** @var bool send a debug header on cache hit */
     const DEBUG_HEADER = true;
@@ -66,7 +75,7 @@ class Esipagecache extends Module
     {
         $this->name = 'esipagecache';
         $this->tab = 'front_office_features';
-        $this->version = '2.0.4';
+        $this->version = '2.0.5';
         $this->author = 'ESI (Cedric AUDRIT)';
         $this->need_instance = 0;
         $this->bootstrap = true;
