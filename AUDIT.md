@@ -230,3 +230,24 @@ constats restants sont **tous documentés** (R4 volume disque ; dépendance over
 déplacement produit inter-catégories ; cookie 1ʳᵉ visite) et **aucun bug de correction/efficacité connu ne subsiste**.
 Le seul vrai jalon avant prod reste le **test fonctionnel sur PS 1.7.6 isolé** (rendu, exclusions, invalidation,
 mesure `Created_tmp_disk_tables`).
+
+---
+
+## Review v2.0.3 (2026-06-29) — round 5, fiabilité des entrées `$_SERVER`
+
+| # | Constat | Gravité | Statut |
+|---|---|---|---|
+| C4 | L'URI et la méthode étaient lues via **`filter_input(INPUT_SERVER, ...)`**. Piège PHP connu : sous **php-fpm/FastCGI**, `INPUT_SERVER` reflète l'environnement SAPI d'origine et renvoie **souvent `null`**. → `normalizedUri()` = `(string) null` = `''` → **toutes les pages partagent la même clé** → **mauvaise page servie** (cache poisoning) | 🔴 correction/sécurité | ✅ **corrigé** : lecture via **`$_SERVER`** (comme PrestaShop lui-même) + **garde anti-clé-vide** (`requestUri() === '' → non cacheable`). Plus aucun `filter_input` actif |
+
+**Pourquoi pas vu plus tôt** : dépend de la SAPI (CLI/Apache mod_php remplissent `INPUT_SERVER`, php-fpm souvent non).
+C'est précisément le risque qui se serait manifesté **en prod** (Apache+php-fpm) et pas en lint/CLI.
+
+### Compatibilité PHP — re-vérifiée
+`php -l` **OK 7.0 → 8.2**. Plus aucun appel `filter_input` (commentaires uniquement).
+
+### Verdict v2.0.3
+C4 était le dernier risque susceptible de **changer le comportement en prod** sans se voir en relecture/CLI.
+Les constats restants sont tous **documentés et assumés** (R4 ; override ; déplacement produit ; Content-Type
+implicite `text/html` non rejoué — sans impact sur des pages HTML standard). **Rendements décroissants atteints sur
+l'analyse statique** : la prochaine étape à valeur réelle est le **test fonctionnel sur PS 1.7.6 isolé**, pas un round
+de plus.

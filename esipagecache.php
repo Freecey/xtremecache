@@ -66,7 +66,7 @@ class Esipagecache extends Module
     {
         $this->name = 'esipagecache';
         $this->tab = 'front_office_features';
-        $this->version = '2.0.2';
+        $this->version = '2.0.3';
         $this->author = 'ESI (Cedric AUDRIT)';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -239,7 +239,14 @@ class Esipagecache extends Module
         if (!Configuration::get('PS_SHOP_ENABLE')) {
             return false;                                   // skip catalog/maintenance mode
         }
-        if (strtoupper((string) filter_input(INPUT_SERVER, 'REQUEST_METHOD')) !== 'GET') {
+        // Read from $_SERVER, NOT filter_input(INPUT_SERVER, ...): under
+        // php-fpm/FastCGI the latter often returns null, which would collapse
+        // the cache key to an empty URI and serve the wrong page.
+        if ($this->requestUri() === '') {
+            return false;                                   // no reliable URI -> never cache
+        }
+        $method = isset($_SERVER['REQUEST_METHOD']) ? (string) $_SERVER['REQUEST_METHOD'] : '';
+        if (strtoupper($method) !== 'GET') {
             return false;                                   // GET only
         }
         if (Tools::getValue('ajax')) {
@@ -309,13 +316,24 @@ class Esipagecache extends Module
     }
 
     /**
+     * Raw request URI from $_SERVER (reliable under php-fpm, unlike
+     * filter_input(INPUT_SERVER, ...)).
+     *
+     * @return string
+     */
+    private function requestUri()
+    {
+        return isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '';
+    }
+
+    /**
      * Request URI with tracking params stripped (utm_*, fbclid, gclid...).
      *
      * @return string
      */
     private function normalizedUri()
     {
-        $uri = (string) filter_input(INPUT_SERVER, 'REQUEST_URI');
+        $uri = $this->requestUri();
         $parts = explode('?', $uri, 2);
         if (count($parts) < 2) {
             return $uri;
