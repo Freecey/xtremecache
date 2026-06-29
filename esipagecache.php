@@ -75,7 +75,7 @@ class Esipagecache extends Module
     {
         $this->name = 'esipagecache';
         $this->tab = 'front_office_features';
-        $this->version = '2.0.5';
+        $this->version = '2.0.6';
         $this->author = 'ESI (Cedric AUDRIT)';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -141,8 +141,14 @@ class Esipagecache extends Module
 
         $html = $this->load($this->currentKey);
         if ($html !== false) {
-            if (static::DEBUG_HEADER) {
-                header('X-Esipagecache: HIT');
+            // a hit bypasses the whole of PrestaShop, so it also bypasses the
+            // Content-Type header the controller would normally send: set it
+            // explicitly instead of relying on the server's default_charset.
+            if (!headers_sent()) {
+                header('Content-Type: text/html; charset=utf-8');
+                if (static::DEBUG_HEADER) {
+                    header('X-Esipagecache: HIT');
+                }
             }
             echo $html;
             exit;

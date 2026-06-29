@@ -89,8 +89,9 @@ override/controllers/admin/AdminPerformanceController.php   # emits actionEmptyS
 2. Install from the BO (*Modules*) or `php bin/console prestashop:module install esipagecache`.
    PrestaShop installs the overrides automatically; the custom `actionRequestComplete`
    hook is created on install.
-3. If another module already overrides `Controller::smartyOutputContent`, merge manually
-   (PrestaShop refuses conflicting overrides).
+3. If another module already overrides `Controller` or `AdminPerformanceController`,
+   PrestaShop refuses the conflicting override and the install fails — merge the two
+   overrides manually in that case.
 
 Uninstall removes the hooks and flushes the cache.
 
