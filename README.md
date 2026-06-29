@@ -64,7 +64,10 @@ Form/token pages (contact, auth, cart, order, search…) are intentionally **exc
 
 **Cache key** = `md5(normalized_uri | id_lang | id_currency | id_shop | device)`.
 Tracking params (`utm_*`, `fbclid`, `gclid`, `mc_`, `_ga`, `_hsenc`, `_hsmi`) are stripped
-and the query string is sorted, so equivalent URLs share one entry.
+and the query string is sorted, so equivalent URLs share one entry. The key is computed
+**once** at dispatch and reused at store time, so it cannot diverge if the controller
+switches language/currency during `init()` (which would otherwise cause permanent misses
+on multilingual / multi-currency shops).
 
 ## Storage
 

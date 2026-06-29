@@ -209,3 +209,24 @@ Passe ciblée « qu'est-ce qui casse réellement sur PS 1.7.6 », pas seulement 
 Le risque le plus sérieux (override de rendu figé en 1.6) est **éliminé** : l'override est désormais un simple
 *tap* sur la sortie du cœur. Reste : R4 (volume disque, à superviser) et l'incontournable **test fonctionnel sur PS
 1.7.6 isolé** avant prod.
+
+---
+
+## Review v2.0.2 (2026-06-29) — round 4, cohérence de clé serve↔store
+
+| # | Constat | Gravité | Statut |
+|---|---|---|---|
+| C3 | **La clé pouvait diverger entre le *serve* et le *store*.** À `actionDispatcherBefore`, `$cookie->id_lang`/`id_currency` portent les valeurs de la requête **précédente** ; `FrontController::init()` peut les **muter** (switch langue/devise par URL ou cookie) avant `smartyOutputContent`. Résultat : page stockée sous K2 mais cherchée sous K1 → **miss permanent** sur boutique **multilingue/multidevise** (+ re-stockage à chaque vue = disque qui gonfle) | 🟠 efficacité | ✅ **corrigé** : la clé est calculée **une seule fois** au dispatch (`$currentKey`) et **réutilisée** au store ; fallback recompute si le hook dispatch n'a pas tourné. Élimine toute divergence (langue, devise, device, URI) |
+
+**Pourquoi pas vu plus tôt** : sur une boutique **monolingue/monodevise** (cas fréquent ici) la clé ne divergeait pas,
+le bug était donc invisible — mais Multicolor (BE) peut être FR+NL → impact réel.
+
+### Compatibilité PHP — re-vérifiée
+`php -l` **OK 7.0 → 8.2**.
+
+### Verdict v2.0.2
+Plus de divergence de clé possible : *serve* et *store* partagent par construction la même clé. À ce stade, les
+constats restants sont **tous documentés** (R4 volume disque ; dépendance override `smartyOutputContent` ;
+déplacement produit inter-catégories ; cookie 1ʳᵉ visite) et **aucun bug de correction/efficacité connu ne subsiste**.
+Le seul vrai jalon avant prod reste le **test fonctionnel sur PS 1.7.6 isolé** (rendu, exclusions, invalidation,
+mesure `Created_tmp_disk_tables`).
