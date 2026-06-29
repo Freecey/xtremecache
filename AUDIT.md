@@ -279,3 +279,28 @@ Round 6 = durcissement de concurrence (C5) + une garde défensive (C6), gravité
 **correction** connu ; les robustesses trouvées sont des cas-limites d'infra (SAPI threadé, fichier tronqué). On est très
 clairement au **plancher des rendements décroissants** de la revue statique. Jalon suivant = **test fonctionnel PS 1.7.6
 isolé** (rien d'autre n'apportera de signal nouveau).
+
+---
+
+## Review v2.0.5 (2026-06-29) — round 7, couverture d'invalidation & fraîcheur
+
+Angle neuf : non plus la mécanique (clé/concurrence/I/O) mais **ce qui change le contenu d'une page sans déclencher de purge**.
+
+| # | Constat | Gravité | Statut |
+|---|---|---|---|
+| C7 | **Trou de couverture d'invalidation + TTL trop long.** Les hooks ne couvrent que `actionProduct*` et `actionCategory*`. **Aucune purge** sur : prix spécifiques / règles de prix catalogue (**promos**), stock passant à 0, contenu **CMS**, fiches fournisseur/fabricant, changements thème/module. Avec **TTL = 7 jours**, ces pages restaient **fausses jusqu'à une semaine** (prix promo périmé servi à un anonyme) | 🟠 fraîcheur/correction | ✅ **traité** : TTL par défaut **7 j → 1 h** (le TTL est le filet de sécurité pour tout vecteur non hooké) + **couverture documentée** (README). Gain temp-tables quasi inchangé (une catégorie vue des milliers de fois/h ne re-render qu'1×/h) |
+
+**Pourquoi ne pas ajouter les hooks `SpecificPrice`/stock ?** Leurs noms/déclenchements sont **version-dépendants** en
+1.6/1.7 et je ne peux pas les valider sans PS 1.7.6 réel ; un hook stock en *flush total* casserait le hit ratio (déclenché
+à chaque commande). Le TTL court est le filet **robuste et sans dépendance**. Reco opérationnelle : vider le cache depuis
+le BO après une campagne promo/prix en masse (déjà câblé via `actionEmptySmartyCache`, cf. R1).
+
+### Compatibilité PHP — re-vérifiée
+`php -l` **OK 7.0 → 8.2**.
+
+### Verdict v2.0.5
+C7 corrige le dernier risque **fonctionnel réel** (prix/contenu périmé sur boutique vivante) sans introduire de dépendance
+fragile. À ce stade, après 7 rounds, **tous les axes ont été couverts** : compat (F1), efficacité du serve (F2/F3), backend
+(F5), invalidation ciblée (F4), rendu (C1), clé (C3), entrées (C4), concurrence (C5/C6), fraîcheur (C7). **Aucun bug connu
+ne subsiste.** Le seul livrable à valeur ajoutée restante est **hors revue statique** : le test fonctionnel sur PS 1.7.6
+isolé (rendu, exclusions, invalidation, mesure `Created_tmp_disk_tables`).
