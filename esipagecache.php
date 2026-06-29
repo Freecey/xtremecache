@@ -66,7 +66,7 @@ class Esipagecache extends Module
     {
         $this->name = 'esipagecache';
         $this->tab = 'front_office_features';
-        $this->version = '2.0.3';
+        $this->version = '2.0.4';
         $this->author = 'ESI (Cedric AUDRIT)';
         $this->need_instance = 0;
         $this->bootstrap = true;
@@ -452,7 +452,10 @@ class Esipagecache extends Module
             return false;
         }
 
-        return @file_get_contents($file);
+        $content = @file_get_contents($file);
+
+        // treat a read failure or a 0-byte file as a miss (never serve a blank page)
+        return ($content === false || $content === '') ? false : $content;
     }
 
     /**
@@ -467,8 +470,10 @@ class Esipagecache extends Module
         $file = $this->getCacheDir() . $key . '.html';
 
         // atomic write: temp file + rename, so a concurrent reader never
-        // gets a half-written page.
-        $tmp = $file . '.' . getmypid() . '.tmp';
+        // gets a half-written page. uniqid() (not just the PID) makes the temp
+        // name unique even under a threaded SAPI (Apache mpm_worker/event +
+        // mod_php), where several threads share one PID.
+        $tmp = $file . '.' . getmypid() . '.' . uniqid('', true) . '.tmp';
         if (@file_put_contents($tmp, $payload, LOCK_EX) === false) {
             return false;
         }

@@ -251,3 +251,31 @@ Les constats restants sont tous **documentés et assumés** (R4 ; override ; dé
 implicite `text/html` non rejoué — sans impact sur des pages HTML standard). **Rendements décroissants atteints sur
 l'analyse statique** : la prochaine étape à valeur réelle est le **test fonctionnel sur PS 1.7.6 isolé**, pas un round
 de plus.
+
+---
+
+## Review v2.0.4 (2026-06-29) — round 6, concurrence threadée + robustesse lecture
+
+| # | Constat | Gravité | Statut |
+|---|---|---|---|
+| C5 | **Collision du fichier `.tmp` sous SAPI multithread.** Le nom temp = `$file.getmypid().'.tmp'`. Unique sous php-fpm/prefork (1 process = 1 requête), mais sous **Apache mpm_worker/event + mod_php** (threadé) plusieurs threads partagent **le même PID** → deux threads stockant la même page écrivent dans le **même `.tmp`** → fichier corrompu, donc **page corrompue cachée** | 🟠 robustesse/concurrence | ✅ **corrigé** : entropie `uniqid('', true)` ajoutée au nom temp (unique même thread/PID identiques). Suffixe `.tmp` conservé → toujours nettoyé par `flush()` |
+| C6 | `load()` : `file_get_contents` sur un fichier **0 octet** renvoie `''` (`!== false`) → **page vide servie** | 🟡 robustesse | ✅ **corrigé** : `''` (et `false`) traités comme *miss* |
+
+**Confirmés sains lors de cette passe** (pas d'action) :
+- Concurrence inter-process : deux workers rendent la même URL → 2 `.tmp` distincts → `rename` atomique, dernier gagne, pas de corruption.
+- Clé = md5 hex → nom de fichier sûr, pas d'injection de chemin.
+- Cycle de vie : 1 requête = 1 instance module → `$currentKey` est bien par-requête.
+- `exit` après serve : PHP flush les buffers de sortie en fin de script → contenu bien envoyé.
+- `$hook->position` dans `createHooks()` : champ hors `définition` de `Hook` → ignoré à la sauvegarde, inoffensif.
+
+**Limites résiduelles inchangées** : marqueurs de tags non nettoyés à l'expiration TTL d'une page (purgés au prochain
+`purgeTags`/`flush`, bornés) ; R4 volume disque ; dépendance override.
+
+### Compatibilité PHP — re-vérifiée
+`php -l` **OK 7.0 → 8.2**.
+
+### Verdict v2.0.4
+Round 6 = durcissement de concurrence (C5) + une garde défensive (C6), gravité en baisse continue. Plus aucun bug de
+**correction** connu ; les robustesses trouvées sont des cas-limites d'infra (SAPI threadé, fichier tronqué). On est très
+clairement au **plancher des rendements décroissants** de la revue statique. Jalon suivant = **test fonctionnel PS 1.7.6
+isolé** (rien d'autre n'apportera de signal nouveau).
