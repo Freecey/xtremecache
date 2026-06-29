@@ -181,3 +181,31 @@ le module ne casse rien mais ne **stocke** rien (fail-safe).
 propre/sûr par défaut. Il **n'est pas** prêt prod tel quel : prérequis = **validation sur un PS 1.7.6 isolé** (jamais
 `preprod.multicolor-sa.com` = prod réelle) avec mesure réelle des `Created_tmp_disk_tables`. À court terme, le plus sûr
 reste d'**activer le cache objet PS** ; le FPC vient en complément une fois validé.
+
+---
+
+## Review v2.0.1 (2026-06-29) — round 3, relecture adversariale
+
+Passe ciblée « qu'est-ce qui casse réellement sur PS 1.7.6 », pas seulement relecture de style.
+
+| # | Constat | Gravité | Statut |
+|---|---|---|---|
+| C1 | **Override `Controller::smartyOutputContent` recopiait la logique de rendu PS 1.6** (re-append manuel `</body></html>`, `javascript.tpl`, `deferInlineScripts`). Sur 1.7.6, le rendu du cœur diffère → risque de **HTML cassé** (double `</body>`, JS manquant) ET de **cacher** cette page cassée | 🔴 majeur | ✅ **corrigé** : l'override appelle désormais `parent::smartyOutputContent()` sous **output buffering**, capture les **octets exacts du cœur**, émet le hook avec, puis les ré-`echo` inchangés → rendu **100 % identique au PrestaShop stock**, quelle que soit la version |
+| C2 | `flush()` ne purgeait que `*.html` → des `*.tmp` orphelins (write atomique interrompu) s'accumulaient | 🟡 propreté | ✅ **corrigé** (purge aussi `*.tmp`) |
+| R4 | **Croissance non bornée du cache** : chaque query string distincte (`?x=1`, `?x=2`…) crée une entrée ; pas de GC → un bot/attaquant peut **remplir le disque** (DoS) | 🟠 risque résiduel | ⚠️ **documenté** (pas corrigé) : recommandation = **cron de purge** + supervision du volume `var/cache/<env>/esipagecache/` + quota disque. Non bridé par whitelist de params car cela casserait la pagination/tri/navigation à facettes (params légitimes nombreux) |
+
+**Analyse de risques confirmés sûrs (non bloquants)** :
+- Contexte à `actionDispatcherBefore` : `cookie`/`shop`/`getDevice()` sont initialisés **avant** `Dispatcher::dispatch()` → OK.
+- `id_category`/`id_product` dispo dans `$_GET` au moment du *store* (le dispatcher les a peuplés) → tags corrects.
+- `http_response_code()` reflète bien un `header('HTTP/1.1 404')` posé par PS → pages 404/redirections **non cachées**.
+- Pagination/tri (`p`, `n`, `orderby`, `orderway`) restent dans la clé → entrées distinctes, **pas de mélange**.
+- Collision de nom `*.tmp` impossible en concurrence (1 process = 1 requête sous PHP-FPM, PID distinct par worker).
+- `Cart::nbProducts()` n'exécute une requête sur le *serve* que si un cookie `id_cart` existe (rare chez le visiteur qui ne fait que naviguer) → coût négligeable devant la requête catégorie évitée.
+
+### Compatibilité PHP — re-vérifiée
+`php -l` **OK 7.0 → 8.2** (module + override Controller réécrit + AdminPerformance + index.php).
+
+### Verdict v2.0.1
+Le risque le plus sérieux (override de rendu figé en 1.6) est **éliminé** : l'override est désormais un simple
+*tap* sur la sortie du cœur. Reste : R4 (volume disque, à superviser) et l'incontournable **test fonctionnel sur PS
+1.7.6 isolé** avant prod.
